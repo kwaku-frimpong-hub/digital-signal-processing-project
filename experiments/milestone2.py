@@ -1,4 +1,4 @@
-"""Synthetic single-channel or two-channel direct-convolution transmission."""
+"""Synthetic single-channel or two-channel transmission."""
 
 import argparse
 from dataclasses import asdict
@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--window", choices=("hamming", "rectangular"), default="hamming")
     parser.add_argument("--guard-hz", type=float, default=250)
     parser.add_argument("--allow-unsafe-bands", action="store_true")
+    parser.add_argument("--convolution-method", choices=("direct", "fft"), default="direct")
     parser.add_argument("--output-dir", type=Path, default=Path("results/milestone2"))
     args = parser.parse_args()
     try:
@@ -38,6 +39,7 @@ def main() -> None:
             window=args.window,
             guard_hz=args.guard_hz,
             allow_unsafe_bands=args.allow_unsafe_bands,
+            convolution_method=args.convolution_method,
         )
         # Distinct baseband tones, with an out-of-band component in each input
         # to demonstrate that sender low-pass filtering is actually active.
@@ -101,7 +103,7 @@ def main() -> None:
     fig.savefig(args.output_dir / "transmitted_spectrum.png")
     plt.close(fig)
 
-    print(f"Active channels: {args.active_channels}; backend: direct convolution")
+    print(f"Active channels: {args.active_channels}; backend: {config.convolution_method}")
     print(f"Receiver delay: {result.receiver_delay}; total delay: {result.total_delay} samples")
     for branch, metric in enumerate(metrics, start=1):
         print(f"Channel {branch}: steady RMSE={metric['steady_rmse']:.6g}, "

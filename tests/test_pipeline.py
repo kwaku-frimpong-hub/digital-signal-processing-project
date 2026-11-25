@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from dataclasses import replace
 
 from dsp_project.pipeline import TransmissionConfig, reconstruction_metrics, transmit
 from dsp_project.signals import sine_mixture, sine_wave
@@ -124,3 +125,37 @@ def test_unsafe_override_warns():
 def test_override_does_not_allow_invalid_filter():
     with pytest.raises(ValueError):
         TransmissionConfig(cutoff_hz=9000, allow_unsafe_bands=True)
+
+
+@pytest.mark.parametrize("active", [0, 1, "both"])
+def test_fft_pipeline_matches_all_direct_stages(inputs, active):
+    signals = [x.copy() for x in inputs]
+    if active != "both":
+        signals[1 - active] *= 0
+    direct = transmit(*signals)
+    fast = transmit(*signals, replace(direct.config, convolution_method="fft"))
+    for name in ("sender_filtered", "modulated", "demodulated", "recovered", "aligned_recovered"):
+        for expected, actual in zip(getattr(direct, name), getattr(fast, name)):
+            np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(fast.transmitted, direct.transmitted, atol=1e-12)
+    assert fast.total_delay == direct.total_delay
+    for expected, actual in zip(reconstruction_metrics(direct), reconstruction_metrics(fast)):
+        assert actual["steady_rmse"] == pytest.approx(expected["steady_rmse"], abs=1e-12)
+
+
+def test_invalid_pipeline_backend():
+    with pytest.raises(ValueError, match="convolution_method"):
+        TransmissionConfig(convolution_method="unknown")
+
+
+@pytest.mark.parametrize("length", [1, 900])
+def test_fft_pipeline_padding_boundaries(length):
+    # At N=900, sender convolution fits 1024 points, but receiver needs 2048.
+    # N=1 also verifies preservation of tails for a very short input.
+    rng = np.random.default_rng(length)
+    first, second = rng.normal(size=length), rng.normal(size=length)
+    direct = transmit(first, second)
+    fast = transmit(first, second, TransmissionConfig(convolution_method="fft"))
+    for actual, expected in zip(fast.recovered, direct.recovered):
+        assert len(actual) == length + 200
+        np.testing.assert_allclose(actual, expected, atol=1e-12)

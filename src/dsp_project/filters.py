@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from dsp_project.convolution import convolve_direct
+from dsp_project.convolution import convolve_dft, convolve_direct, convolve_fft
 
 
 def lowpass_fir(
@@ -47,6 +47,14 @@ def lowpass_fir(
     return coefficients
 
 
-def apply_fir(samples: np.ndarray, coefficients: np.ndarray) -> np.ndarray:
-    """Filter by full direct convolution; retain both delay and trailing tail."""
-    return convolve_direct(samples, coefficients)
+def apply_fir(
+    samples: np.ndarray, coefficients: np.ndarray, method: str = "direct"
+) -> np.ndarray:
+    """Full convolution; all backends retain identical delays and trailing tails.
+
+    DFT is available for small educational checks; use FFT for longer signals.
+    """
+    backends = {"direct": convolve_direct, "dft": convolve_dft, "fft": convolve_fft}
+    if method not in backends:
+        raise ValueError("method must be 'direct', 'dft', or 'fft'")
+    return backends[method](samples, coefficients)

@@ -1,4 +1,4 @@
-"""Two-channel transmission using the direct-convolution baseline.
+"""Two-channel transmission with interchangeable direct/FFT convolution.
 
 All arrays keep their causal sample positions and full convolution tails.
 No gain normalization or automatic delay removal is applied to the pipeline.
@@ -11,6 +11,7 @@ import numpy as np
 
 from dsp_project.filters import apply_fir, lowpass_fir
 from dsp_project.modulation import demodulate, modulate, real_samples
+from dsp_project.transforms import get_fft_plan, next_power_of_two
 
 
 @dataclass(frozen=True)
@@ -28,11 +29,14 @@ class TransmissionConfig:
     window: str = "hamming"
     guard_hz: float = 250
     allow_unsafe_bands: bool = False
+    convolution_method: str = "direct"
 
     def __post_init__(self) -> None:
         # Reuse the FIR's parameter validation rather than inventing different
         # rules here. Actual filtering coefficients are prepared in transmit().
         lowpass_fir(self.cutoff_hz, self.sample_rate, self.num_taps, self.window)
+        if self.convolution_method not in ("direct", "fft"):
+            raise ValueError("convolution_method must be 'direct' or 'fft'")
         if len(self.carrier_hz) != 2:
             raise ValueError("exactly two carrier frequencies are required")
         if not all(np.isfinite(f) and f >= 0 for f in self.carrier_hz):
@@ -115,7 +119,13 @@ def transmit(
     if len(inputs[0]) != len(inputs[1]):
         raise ValueError("both signals must have equal lengths")
     h = lowpass_fir(config.cutoff_hz, config.sample_rate, config.num_taps, config.window)
-    sender = tuple(apply_fir(x, h) for x in inputs)
+    method = config.convolution_method
+    if method == "fft":
+        # Prepare BOTH lengths before the sender/receiver processing begins.
+        # Receiver inputs include the full sender-filter tail.
+        for length in (len(inputs[0]) + len(h) - 1, len(inputs[0]) + 2 * (len(h) - 1)):
+            get_fft_plan(next_power_of_two(length))
+    sender = tuple(apply_fir(x, h, method=method) for x in inputs)
     modulated = tuple(
         modulate(x, carrier, config.sample_rate)
         for x, carrier in zip(sender, config.carrier_hz)
@@ -124,7 +134,7 @@ def transmit(
     mixed = tuple(
         demodulate(medium, carrier, config.sample_rate) for carrier in config.carrier_hz
     )
-    recovered = tuple(apply_fir(x, h) for x in mixed)
+    recovered = tuple(apply_fir(x, h, method=method) for x in mixed)
     return TransmissionResult(config, inputs, h, sender, modulated, medium, mixed, recovered)
 
 

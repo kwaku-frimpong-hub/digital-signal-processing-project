@@ -1,7 +1,7 @@
-# DSP Project — Milestones 1 and 2
+# DSP Project — Milestones 1–3
 
-Foundations and the direct-convolution transmission system are implemented.
-Audio I/O and our DFT/FFT algorithms belong to later milestones.
+Foundations, transmission, our DFT/FFT algorithms, and fast convolution are
+implemented. Audio I/O belongs to a later milestone.
 
 ## Setup and run
 
@@ -89,11 +89,11 @@ Tests cover known samples, impulse shifts, linearity, commutativity, real and
 complex convolution, integer promotion, filter symmetry, DC gain, coefficient
 formula, delay, pass/stop behavior, and a two-tone filtering example.
 
-Production convolution is our own direct O(N*M) implementation. NumPy's
-convolution is used only in tests as an independent reference.
-NumPy's FFT is used only in diagnostic plots; no project DFT/FFT algorithm has
-been implemented yet. Plotting spectra are one-sided, without a taper, so
-finite-record leakage can be visible.
+Production convolution uses our own algorithms. NumPy's convolution and FFT
+are used as independent references in tests. NumPy's FFT is also used in
+diagnostic plotting helpers, but never in production filtering or transforms.
+Plotting spectra are one-sided, without a taper, so finite-record leakage can
+be visible.
 
 ## Milestone 2 — two-channel transmission
 
@@ -183,4 +183,104 @@ absolute RMSE measures leakage from the active channel.
 
 For example, inspect arrays interactively with
 `np.load("results/milestone2/signals.npz")`; array names are listed in `.files`.
-No WAV output or optimized convolution backend is included in this milestone.
+No WAV output was included in Milestone 2. Milestone 3 adds the FFT backend below.
+
+## Milestone 3 — Fourier transforms and fast convolution
+
+```bash
+uv run pytest
+uv run python experiments/milestone3.py
+uv run python experiments/milestone2.py --convolution-method fft --output-dir results/milestone2_fft
+```
+
+The existing direct backend remains the default. All full-output lengths, delay
+conventions, and intermediate signals are unchanged when choosing FFT.
+
+### Suggested reading order
+
+1. `src/dsp_project/transforms.py`: direct DFT, inverse by conjugation, bit
+   reversal, iterative butterflies, precomputed twiddles, and inverse FFT.
+2. `tests/test_transforms.py`: hand-calculated spectra, seeded random
+   comparisons, round trips, length checks, and a no-trigonometry execution test.
+3. `src/dsp_project/convolution.py`: direct, DFT, and FFT convolution side by side.
+4. `tests/test_fast_convolution.py`: zero padding, tails, real/complex signals.
+5. `src/dsp_project/filters.py` and `pipeline.py`: backend selection.
+6. `experiments/milestone3.py`: complete numerical-equivalence demonstration.
+
+### Transform conventions
+
+```text
+DFT:  X[k] = sum_n x[n] * exp(-2*pi*i*k*n/N)
+IDFT: x[n] = sum_k X[k] * exp(+2*pi*i*k*n/N) / N
+```
+
+DFT/IDFT accept any positive input length. They cost O(N²) operations, so use
+small examples. They compute one row at a time, avoiding a large N-by-N matrix.
+The iterative FFT/IFFT cost O(N*log2(N)) and support power-of-two lengths,
+including length 1. They never silently pad input.
+All transforms return complex arrays, leave inputs untouched, and reject empty,
+nonfinite, and multidimensional input.
+
+The FFT first reorders input in bit-reversed order, then combines groups of
+width 2, 4, 8, ..., N. Each stage uses factors from a precomputed table of
+N-th roots of unity. Independent butterflies are processed together with array
+operations; no library FFT is called. IFFT uses
+`conj(FFT(conj(X))) / N`, reusing the same plan and twiddle table.
+Only the iterative FFT is implemented; a second, recursive implementation is
+not needed for the chosen project scope.
+
+### Setup versus processing
+
+```python
+from dsp_project.transforms import FFTPlan
+
+plan = FFTPlan(8)             # Setup: bit-reversal indices and sin/cos table.
+spectrum = plan.fft([1, 2, 3, 4, 0, 0, 0, 0])  # No trig in execution.
+restored = plan.ifft(spectrum)
+```
+
+`get_fft_plan(N)` caches up to 16 plans. Convenience functions `fft(x)` and
+`ifft(X)` prepare a plan on first use at a new length; repeated calls reuse it.
+For setup-free measurements, explicitly prepare and retain an `FFTPlan` before
+timing execution. Pipeline FFT setup prepares both required convolution lengths
+before processing the sender and receiver branches.
+
+### Linear convolution through transforms
+
+For lengths N and M, the required full result has L = N + M - 1 samples:
+
+1. Zero-pad both sequences to at least L.
+2. Transform both.
+3. Multiply spectra elementwise.
+4. Apply the inverse transform.
+5. Keep the first L samples.
+
+`convolve_dft()` uses exactly L transform samples and is intended for small
+checks. `convolve_fft()` pads to `next_power_of_two(L)`. Without sufficient
+padding, the tail would wrap into the beginning (circular convolution).
+Real inputs produce real output by discarding only the inverse transform's
+roundoff imaginary residue. Complex inputs retain their complex output.
+Neither backend rounds, normalizes gains, nor discards the linear-convolution
+tail. `apply_fir(..., method="direct" | "dft" | "fft")` exposes all three;
+the transmission configuration deliberately offers only `"direct"` and `"fft"`.
+
+### Validation and outputs
+
+Tests compare our transforms with NumPy, compare FFT against DFT for many
+seeded random real/complex signals, verify inverse transforms, and check
+convolution and full pipeline stages against direct/reference implementations.
+A prepared-plan test makes sine/cosine/exponential and library FFT calls fail,
+ensuring FFT/IFFT execution does not depend on them.
+
+`results/milestone3/` contains:
+
+- `comparison.json`: seed, configurations, transform/convolution differences,
+  all pipeline-stage differences, and reconstruction metrics for both backends.
+- `transforms.png`: two-tone spectra and FFT-versus-DFT numerical difference.
+- `pipeline_difference.png`: complete recovered FFT outputs minus direct outputs.
+
+Expect numerical differences near floating-point precision, not exactly zero.
+Agreement between backends does not eliminate finite-filter distortion: both
+implement the same FIR and therefore have the same reconstruction limitations.
+These are correctness checks, not formal performance benchmarks. Repeated
+timings, setup-cost reporting, and parameter sweeps remain in Milestone 5.
